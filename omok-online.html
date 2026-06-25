@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>온라인 오목 - 대결 & 관람</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-start; gap: 14px;
+    background: #2b2b30; color: #f0f0f0;
+    font-family: -apple-system, "Malgun Gothic", sans-serif; padding: 20px;
+  }
+  h1 { margin: 4px 0; font-size: 22px; }
+  .panel {
+    background: #3a3a42; border-radius: 12px; padding: 18px;
+    width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .panel h2 { margin: 0; font-size: 16px; }
+  .row { display: flex; gap: 8px; }
+  input {
+    flex: 1; font-size: 15px; padding: 10px; border-radius: 8px;
+    border: 1px solid #555; background: #222; color: #fff; text-transform: uppercase;
+  }
+  button {
+    font-size: 15px; padding: 10px 16px; border: none; border-radius: 8px;
+    background: #5b8def; color: #fff; cursor: pointer; font-weight: 600; white-space: nowrap;
+  }
+  button:hover { background: #4a7ad6; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  button.gray { background: #555; }
+  button.gray:hover { background: #444; }
+  button.green { background: #3ba55d; }
+  button.green:hover { background: #339150; }
+  .code-box {
+    display: flex; gap: 8px; align-items: center; background: #222;
+    padding: 10px 12px; border-radius: 8px; font-size: 18px; font-weight: 700;
+    letter-spacing: 2px; justify-content: space-between;
+  }
+  .hint { font-size: 12px; color: #aaa; line-height: 1.5; }
+  .divider { border-top: 1px solid #555; margin: 4px 0; }
+  #status {
+    font-size: 17px; font-weight: 600; padding: 8px 18px;
+    background: #3a3a42; border-radius: 999px; min-height: 22px; text-align: center;
+  }
+  .stone-dot { display: inline-block; width: 13px; height: 13px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+  .black-dot { background: #1a1a1a; border: 1px solid #888; }
+  .white-dot { background: #fafafa; border: 1px solid #888; }
+  canvas { background: #e3b66b; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4); touch-action: manipulation; }
+  .hidden { display: none !important; }
+  .controls { display: flex; gap: 10px; }
+  .myinfo { font-size: 13px; color: #ccc; text-align: center; }
+  .badge { background:#222; padding:3px 10px; border-radius:999px; font-size:12px; color:#bbb; }
+</style>
+</head>
+<body>
+  <h1>온라인 오목 ⚫⚪</h1>
+
+  <!-- 로비 -->
+  <div id="lobby" class="panel">
+    <h2>① 방 만들기</h2>
+    <button id="createBtn">방 만들기 (내가 흑, 선공)</button>
+    <div id="codeArea" class="hidden">
+      <div class="hint">방 코드를 상대/관람자에게 보내세요.</div>
+      <div class="code-box"><span id="myCode">…</span><button id="copyBtn" class="gray">복사</button></div>
+    </div>
+
+    <div class="divider"></div>
+    <h2>② 참가 / 관람</h2>
+    <input id="joinInput" placeholder="받은 방 코드 입력" autocomplete="off">
+    <div class="row">
+      <button id="playBtn" style="flex:1;">⚪ 플레이어로 참가</button>
+      <button id="watchBtn" class="green" style="flex:1;">👀 관람하기</button>
+    </div>
+    <div id="lobbyMsg" class="hint"></div>
+  </div>
+
+  <!-- 게임 -->
+  <div id="game" class="hidden" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+    <div id="status"></div>
+    <div class="myinfo"><span id="myInfo"></span> &nbsp; <span class="badge" id="specBadge">관람 0명</span></div>
+    <canvas id="board"></canvas>
+    <div class="controls">
+      <button id="newGameBtn" class="gray">새 게임</button>
+    </div>
+  </div>
+
+  <div class="hint" id="connState"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script>
+(function(){
+  // ===== 판 설정 =====
+  const SIZE=15, CELL=36, PAD=26, DIM=PAD*2+CELL*(SIZE-1);
+  let canvas, ctx;
+  // ===== 공유 게임 상태 =====
+  let board, current, gameOver, winner, lastMove, specCount=0;
+  // ===== 네트워크 =====
+  let peer, isHost=false, myColor=0;   // 1흑,2백,0관람
+  // 호스트 전용
+  let conns=[], whiteConn=null;
+  // 게스트 전용
+  let hostConn=null;
+  let inGame=false;
+
+  const $=id=>document.getElementById(id);
+
+  function makeCode(){
+    const ch='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s='';
+    for(let i=0;i<6;i++)s+=ch[Math.floor(Math.random()*ch.length)]; return s;
+  }
+
+  // ---------- 호스트: 방 만들기 ----------
+  $('createBtn').addEventListener('click', ()=>{
+    const code=makeCode();
+    $('createBtn').disabled=true; $('connState').textContent='서버 연결 중…';
+    isHost=true; myColor=1;
+    peer=new Peer('omok-'+code);
+    peer.on('open', ()=>{
+      $('myCode').textContent=code; $('codeArea').classList.remove('hidden');
+      $('connState').textContent='상대/관람자 대기 중…';
+      enterGame();        // 호스트는 바로 입장(흑)
+      resetState();
+    });
+    peer.on('connection', c=>registerConn(c));
+    peer.on('error', e=>{ $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false; });
+  });
+
+  function registerConn(c){
+    conns.push(c);
+    c.on('data', msg=>hostHandle(c,msg));
+    c.on('close', ()=>{
+      conns=conns.filter(x=>x!==c);
+      if(c===whiteConn){ whiteConn=null; }
+      recountSpecs(); broadcastState();
+    });
+  }
+
+  function hostHandle(c,msg){
+    if(msg.type==='hello'){
+      if(msg.role==='player' && !whiteConn){
+        whiteConn=c; c._color=2;
+        c.send({type:'welcome', color:2});
+      } else {
+        c._color=0;
+        c.send({type:'welcome', color:0});
+      }
+      recountSpecs();
+      c.send(stateMsg());          // 현재 판 즉시 전송
+      broadcastState();
+    } else if(msg.type==='intent'){
+      if(c===whiteConn) applyMove(msg.r,msg.c,2);  // 백 착수 요청
+    } else if(msg.type==='newgame'){
+      resetState();
+    }
+  }
+
+  function recountSpecs(){ specCount=conns.filter(x=>x._color===0).length; }
+
+  // ---------- 게스트: 참가 / 관람 ----------
+  function join(role){
+    const code=$('joinInput').value.trim().toUpperCase();
+    if(code.length<4){ $('lobbyMsg').textContent='방 코드를 정확히 입력하세요.'; return; }
+    $('playBtn').disabled=true; $('watchBtn').disabled=true;
+    $('lobbyMsg').textContent='연결 중…';
+    isHost=false;
+    peer=new Peer();
+    peer.on('open', ()=>{
+      hostConn=peer.connect('omok-'+code,{reliable:true});
+      hostConn.on('open', ()=>hostConn.send({type:'hello', role}));
+      hostConn.on('data', guestHandle);
+      hostConn.on('close', ()=>{ if(inGame) updateStatus('호스트 연결이 끊겼습니다.'); });
+    });
+    peer.on('error', e=>{
+      $('lobbyMsg').textContent='연결 실패: '+e.type+' (코드 확인)';
+      $('playBtn').disabled=false; $('watchBtn').disabled=false;
+    });
+  }
+  $('playBtn').addEventListener('click', ()=>join('player'));
+  $('watchBtn').addEventListener('click', ()=>join('spectator'));
+
+  function guestHandle(msg){
+    if(msg.type==='welcome'){
+      myColor=msg.color;
+      if(myColor===2 && false){} // 자리참
+      if(myColor===0) $('lobbyMsg').textContent='';
+      enterGame();
+    } else if(msg.type==='state'){
+      board=msg.board; current=msg.current; gameOver=msg.gameOver;
+      winner=msg.winner; lastMove=msg.lastMove; specCount=msg.specCount;
+      if(!inGame) enterGame();
+      draw(); refreshStatus();
+    }
+  }
+
+  // ---------- 공통 진입 ----------
+  function enterGame(){
+    if(inGame) return; inGame=true;
+    $('lobby').classList.add('hidden');
+    $('game').classList.remove('hidden');
+    $('connState').textContent='연결됨 ✓';
+    let label;
+    if(myColor===1) label='<span class="stone-dot black-dot"></span>나는 흑 (선공)';
+    else if(myColor===2) label='<span class="stone-dot white-dot"></span>나는 백 (후공)';
+    else label='👀 관람 모드 (착수 불가)';
+    $('myInfo').innerHTML=label;
+    initCanvas();
+    if(isHost){ draw(); refreshStatus(); }
+  }
+
+  $('copyBtn').addEventListener('click', ()=>{
+    navigator.clipboard?.writeText($('myCode').textContent);
+    $('copyBtn').textContent='복사됨'; setTimeout(()=>$('copyBtn').textContent='복사',1200);
+  });
+
+  $('newGameBtn').addEventListener('click', ()=>{
+    if(myColor===0) return;             // 관람자는 불가
+    if(isHost) resetState();
+    else hostConn?.send({type:'newgame'});
+  });
+
+  // ---------- 게임 로직 (호스트가 권한 보유) ----------
+  function resetState(){
+    board=Array.from({length:SIZE},()=>Array(SIZE).fill(0));
+    current=1; gameOver=false; winner=0; lastMove=null;
+    draw(); refreshStatus(); broadcastState();
+  }
+  function applyMove(r,c,player){            // 호스트에서만 호출
+    if(gameOver || board[r][c]!==0 || player!==current) return;
+    board[r][c]=player; lastMove={r,c};
+    if(checkWin(r,c,player)){ gameOver=true; winner=player; }
+    else current=(player===1?2:1);
+    draw(); refreshStatus(); broadcastState();
+  }
+  function checkWin(r,c,p){
+    const dirs=[[0,1],[1,0],[1,1],[1,-1]];
+    for(const[dr,dc]of dirs){let n=1;
+      for(const s of[1,-1]){let nr=r+dr*s,nc=c+dc*s;
+        while(nr>=0&&nr<SIZE&&nc>=0&&nc<SIZE&&board[nr][nc]===p){n++;nr+=dr*s;nc+=dc*s;}}
+      if(n>=5)return true;}
+    return false;
+  }
+
+  function stateMsg(){
+    return {type:'state', board, current, gameOver, winner, lastMove, specCount};
+  }
+  function broadcastState(){
+    if(!isHost) return;
+    const m=stateMsg();
+    conns.forEach(c=>{ try{c.send(m);}catch(e){} });
+    $('specBadge').textContent='관람 '+specCount+'명';
+  }
+
+  // ---------- 입력 ----------
+  function initCanvas(){
+    canvas=$('board'); ctx=canvas.getContext('2d');
+    const dpr=window.devicePixelRatio||1;
+    canvas.width=DIM*dpr; canvas.height=DIM*dpr;
+    canvas.style.width=DIM+'px'; canvas.style.height=DIM+'px';
+    ctx.scale(dpr,dpr);
+    canvas.style.cursor = (myColor===0)?'default':'pointer';
+    canvas.addEventListener('click', onClick);
+  }
+  function onClick(e){
+    if(myColor===0 || gameOver) return;       // 관람자/종료
+    if(current!==myColor) return;             // 내 차례 아님
+    const rect=canvas.getBoundingClientRect();
+    const c=Math.round((e.clientX-rect.left-PAD)/CELL);
+    const r=Math.round((e.clientY-rect.top-PAD)/CELL);
+    if(r<0||r>=SIZE||c<0||c>=SIZE||board[r][c]!==0) return;
+    if(isHost) applyMove(r,c,1);              // 호스트=흑
+    else hostConn.send({type:'intent', r, c});
+  }
+
+  // ---------- 상태 표시 ----------
+  function refreshStatus(){
+    $('specBadge').textContent='관람 '+(specCount||0)+'명';
+    if(gameOver){
+      const name=winner===1?'⚫ 흑':'⚪ 백';
+      const me=(winner===myColor && myColor!==0)?' (나의 승리!)':'';
+      updateStatus(`🎉 ${name} 승리!${me}`); return;
+    }
+    const dot=current===1?'<span class="stone-dot black-dot"></span>':'<span class="stone-dot white-dot"></span>';
+    let tail;
+    if(myColor===0) tail='관람 중';
+    else tail=(current===myColor)?'내 차례!':'상대 차례';
+    updateStatus(dot+(current===1?'흑':'백')+' — '+tail);
+  }
+  function updateStatus(html){ $('status').innerHTML=html; }
+
+  // ---------- 렌더링 ----------
+  function draw(){
+    if(!ctx||!board) return;
+    ctx.clearRect(0,0,DIM,DIM);
+    ctx.strokeStyle='#5c3a1e'; ctx.lineWidth=1;
+    for(let i=0;i<SIZE;i++){const p=PAD+i*CELL;
+      ctx.beginPath();ctx.moveTo(PAD,p);ctx.lineTo(DIM-PAD,p);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(p,PAD);ctx.lineTo(p,DIM-PAD);ctx.stroke();}
+    const st=[3,7,11]; ctx.fillStyle='#5c3a1e';
+    for(const r of st)for(const c of st){ctx.beginPath();ctx.arc(PAD+c*CELL,PAD+r*CELL,3,0,Math.PI*2);ctx.fill();}
+    for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)if(board[r][c])stone(r,c,board[r][c]);
+    if(lastMove){ctx.strokeStyle='#e34b4b';ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(PAD+lastMove.c*CELL,PAD+lastMove.r*CELL,CELL*0.42,0,Math.PI*2);ctx.stroke();}
+  }
+  function stone(r,c,p){
+    const x=PAD+c*CELL,y=PAD+r*CELL,rad=CELL*0.42;
+    const g=ctx.createRadialGradient(x-rad*0.3,y-rad*0.3,rad*0.1,x,y,rad);
+    if(p===1){g.addColorStop(0,'#666');g.addColorStop(1,'#0a0a0a');}
+    else{g.addColorStop(0,'#fff');g.addColorStop(1,'#c8c8c8');}
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);ctx.fill();
+  }
+})();
+</script>
+</body>
+</html>
