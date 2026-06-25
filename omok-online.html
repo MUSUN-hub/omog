@@ -72,11 +72,11 @@
   <div id="lobby" class="panel">
     <h2>① 방 만들기</h2>
     <button id="createBtn">방 만들기 (내가 흑, 선공)</button>
-    <div class="hint">방을 만들면 다음 화면에 방 코드가 나옵니다.</div>
+    <div class="hint">처음 입장하는 사람이 눌러 방을 엽니다.</div>
 
     <div class="divider"></div>
     <h2>② 참가 / 관람</h2>
-    <input id="joinInput" placeholder="받은 방 코드 입력" autocomplete="off">
+    <div class="hint">방이 열려 있으면 코드 없이 바로 들어갑니다.</div>
     <div class="row">
       <button id="playBtn" style="flex:1;">⚪ 플레이어로 참가</button>
       <button id="watchBtn" class="green" style="flex:1;">👀 관람하기</button>
@@ -93,10 +93,6 @@
       <span class="seat" id="seatSpec">👀 관람 0</span>
     </div>
     <div id="notice"></div>
-    <div id="gameCodeArea" class="hidden" style="display:flex;flex-direction:column;gap:6px;align-items:center;background:#3a3a42;padding:10px 14px;border-radius:10px;">
-      <div class="hint">아래 방 코드를 상대·관람자에게 보내세요</div>
-      <div class="code-box" style="min-width:220px;"><span id="gameCode">…</span><button id="gameCopyBtn" class="gray">복사</button></div>
-    </div>
     <canvas id="board"></canvas>
     <div class="controls">
       <button id="newGameBtn" class="gray hidden">새 게임</button>
@@ -130,29 +126,30 @@
 
   const $=id=>document.getElementById(id);
 
-  function makeCode(){
-    const ch='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s='';
-    for(let i=0;i<6;i++)s+=ch[Math.floor(Math.random()*ch.length)]; return s;
-  }
+  const ROOM_ID='omok-musun-room-7f3a9c2e1b';   // 코드 없이 모두 같은 방
 
   // ---------- 호스트: 방 만들기 ----------
   $('createBtn').addEventListener('click', ()=>{
-    const code=makeCode();
-    $('createBtn').disabled=true; $('connState').textContent='서버 연결 중…';
+    $('createBtn').disabled=true; $('connState').textContent='방 만드는 중…';
     isHost=true;
-    peer=new Peer('omok-'+code);
+    peer=new Peer(ROOM_ID);
     peer.on('open', ()=>{
       myId='HOST';
       seat={1:'HOST', 2:null};   // 호스트가 흑
-      $('connState').textContent='상대/관람자 대기 중…';
       enterGame();
-      $('gameCode').textContent=code;
-      $('gameCodeArea').classList.remove('hidden');
       resetBoard();
       pushState();
     });
     peer.on('connection', c=>registerConn(c));
-    peer.on('error', e=>{ $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false; });
+    peer.on('error', e=>{
+      if(e.type==='unavailable-id'){
+        $('lobbyMsg').textContent='이미 방이 열려 있어요. "플레이어로 참가" 또는 "관람하기"로 들어오세요.';
+        isHost=false; $('createBtn').disabled=false;
+        try{ peer.destroy(); }catch(_){}
+      } else {
+        $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false;
+      }
+    });
   });
 
   function registerConn(c){
@@ -204,21 +201,21 @@
 
   // ---------- 게스트: 참가 / 관람 ----------
   function join(role){
-    const code=$('joinInput').value.trim().toUpperCase();
-    if(code.length<4){ $('lobbyMsg').textContent='방 코드를 정확히 입력하세요.'; return; }
     $('playBtn').disabled=true; $('watchBtn').disabled=true;
     $('lobbyMsg').textContent='연결 중…';
     isHost=false;
     peer=new Peer();
     peer.on('open', ()=>{
       myId=peer.id;
-      hostConn=peer.connect('omok-'+code,{reliable:true});
+      hostConn=peer.connect(ROOM_ID,{reliable:true});
       hostConn.on('open', ()=>hostConn.send({type:'hello', role}));
       hostConn.on('data', guestHandle);
       hostConn.on('close', ()=>{ if(inGame){ $('notice').textContent='호스트 연결이 끊겼습니다.'; updateStatus('연결 종료'); } });
     });
     peer.on('error', e=>{
-      $('lobbyMsg').textContent='연결 실패: '+e.type+' (코드 확인)';
+      let m='연결 실패: '+e.type;
+      if(e.type==='peer-unavailable') m='아직 방이 없어요. 먼저 "방 만들기"를 눌러주세요.';
+      $('lobbyMsg').textContent=m;
       $('playBtn').disabled=false; $('watchBtn').disabled=false;
     });
   }
@@ -295,10 +292,6 @@
   }
 
   // ---------- 버튼 ----------
-  $('gameCopyBtn').addEventListener('click', ()=>{
-    navigator.clipboard?.writeText($('gameCode').textContent);
-    $('gameCopyBtn').textContent='복사됨'; setTimeout(()=>$('gameCopyBtn').textContent='복사',1200);
-  });
   $('newGameBtn').addEventListener('click', ()=>{
     if(myColor===0) return;
     if(isHost){ resetBoard(); pushState(); }
