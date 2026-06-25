@@ -35,9 +35,10 @@
   button.green:hover { background: #339150; }
   .code-box {
     display: flex; gap: 8px; align-items: center; background: #222;
-    padding: 10px 12px; border-radius: 8px; font-size: 18px; font-weight: 700;
-    letter-spacing: 2px; justify-content: space-between;
+    padding: 10px 12px; border-radius: 8px; font-size: 20px; font-weight: 700;
+    letter-spacing: 3px; justify-content: space-between;
   }
+  .code-box button { font-size: 13px; letter-spacing: 0; padding: 6px 12px; }
   .hint { font-size: 12px; color: #aaa; line-height: 1.5; }
   .divider { border-top: 1px solid #555; margin: 4px 0; }
   #status {
@@ -61,10 +62,7 @@
   <div id="lobby" class="panel">
     <h2>① 방 만들기</h2>
     <button id="createBtn">방 만들기 (내가 흑, 선공)</button>
-    <div id="codeArea" class="hidden">
-      <div class="hint">방 코드를 상대/관람자에게 보내세요.</div>
-      <div class="code-box"><span id="myCode">…</span><button id="copyBtn" class="gray">복사</button></div>
-    </div>
+    <div class="hint">방을 만들면 다음 화면에 방 코드가 나옵니다.</div>
 
     <div class="divider"></div>
     <h2>② 참가 / 관람</h2>
@@ -80,6 +78,10 @@
   <div id="game" class="hidden" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
     <div id="status"></div>
     <div class="myinfo"><span id="myInfo"></span> &nbsp; <span class="badge" id="specBadge">관람 0명</span></div>
+    <div id="gameCodeArea" class="hidden" style="display:flex;flex-direction:column;gap:6px;align-items:center;background:#3a3a42;padding:10px 14px;border-radius:10px;">
+      <div class="hint" id="gameCodeHint">아래 방 코드를 상대·관람자에게 보내세요</div>
+      <div class="code-box" style="min-width:220px;"><span id="gameCode">…</span><button id="gameCopyBtn" class="gray">복사</button></div>
+    </div>
     <canvas id="board"></canvas>
     <div class="controls">
       <button id="newGameBtn" class="gray">새 게임</button>
@@ -98,10 +100,8 @@
   let board, current, gameOver, winner, lastMove, specCount=0;
   // ===== 네트워크 =====
   let peer, isHost=false, myColor=0;   // 1흑,2백,0관람
-  // 호스트 전용
-  let conns=[], whiteConn=null;
-  // 게스트 전용
-  let hostConn=null;
+  let conns=[], whiteConn=null;        // 호스트 전용
+  let hostConn=null;                   // 게스트 전용
   let inGame=false;
 
   const $=id=>document.getElementById(id);
@@ -118,9 +118,10 @@
     isHost=true; myColor=1;
     peer=new Peer('omok-'+code);
     peer.on('open', ()=>{
-      $('myCode').textContent=code; $('codeArea').classList.remove('hidden');
       $('connState').textContent='상대/관람자 대기 중…';
-      enterGame();        // 호스트는 바로 입장(흑)
+      enterGame();                       // 호스트는 바로 입장(흑)
+      $('gameCode').textContent=code;    // 게임 화면 안에 코드 표시
+      $('gameCodeArea').classList.remove('hidden');
       resetState();
     });
     peer.on('connection', c=>registerConn(c));
@@ -132,7 +133,7 @@
     c.on('data', msg=>hostHandle(c,msg));
     c.on('close', ()=>{
       conns=conns.filter(x=>x!==c);
-      if(c===whiteConn){ whiteConn=null; }
+      if(c===whiteConn) whiteConn=null;
       recountSpecs(); broadcastState();
     });
   }
@@ -140,17 +141,15 @@
   function hostHandle(c,msg){
     if(msg.type==='hello'){
       if(msg.role==='player' && !whiteConn){
-        whiteConn=c; c._color=2;
-        c.send({type:'welcome', color:2});
+        whiteConn=c; c._color=2; c.send({type:'welcome', color:2});
       } else {
-        c._color=0;
-        c.send({type:'welcome', color:0});
+        c._color=0; c.send({type:'welcome', color:0});
       }
       recountSpecs();
-      c.send(stateMsg());          // 현재 판 즉시 전송
+      c.send(stateMsg());
       broadcastState();
     } else if(msg.type==='intent'){
-      if(c===whiteConn) applyMove(msg.r,msg.c,2);  // 백 착수 요청
+      if(c===whiteConn) applyMove(msg.r,msg.c,2);
     } else if(msg.type==='newgame'){
       resetState();
     }
@@ -183,7 +182,6 @@
   function guestHandle(msg){
     if(msg.type==='welcome'){
       myColor=msg.color;
-      if(myColor===2 && false){} // 자리참
       if(myColor===0) $('lobbyMsg').textContent='';
       enterGame();
     } else if(msg.type==='state'){
@@ -209,13 +207,13 @@
     if(isHost){ draw(); refreshStatus(); }
   }
 
-  $('copyBtn').addEventListener('click', ()=>{
-    navigator.clipboard?.writeText($('myCode').textContent);
-    $('copyBtn').textContent='복사됨'; setTimeout(()=>$('copyBtn').textContent='복사',1200);
+  $('gameCopyBtn').addEventListener('click', ()=>{
+    navigator.clipboard?.writeText($('gameCode').textContent);
+    $('gameCopyBtn').textContent='복사됨'; setTimeout(()=>$('gameCopyBtn').textContent='복사',1200);
   });
 
   $('newGameBtn').addEventListener('click', ()=>{
-    if(myColor===0) return;             // 관람자는 불가
+    if(myColor===0) return;
     if(isHost) resetState();
     else hostConn?.send({type:'newgame'});
   });
@@ -226,7 +224,7 @@
     current=1; gameOver=false; winner=0; lastMove=null;
     draw(); refreshStatus(); broadcastState();
   }
-  function applyMove(r,c,player){            // 호스트에서만 호출
+  function applyMove(r,c,player){
     if(gameOver || board[r][c]!==0 || player!==current) return;
     board[r][c]=player; lastMove={r,c};
     if(checkWin(r,c,player)){ gameOver=true; winner=player; }
@@ -235,10 +233,14 @@
   }
   function checkWin(r,c,p){
     const dirs=[[0,1],[1,0],[1,1],[1,-1]];
-    for(const[dr,dc]of dirs){let n=1;
-      for(const s of[1,-1]){let nr=r+dr*s,nc=c+dc*s;
-        while(nr>=0&&nr<SIZE&&nc>=0&&nc<SIZE&&board[nr][nc]===p){n++;nr+=dr*s;nc+=dc*s;}}
-      if(n>=5)return true;}
+    for(const [dr,dc] of dirs){
+      let n=1;
+      for(const s of [1,-1]){
+        let nr=r+dr*s, nc=c+dc*s;
+        while(nr>=0&&nr<SIZE&&nc>=0&&nc<SIZE&&board[nr][nc]===p){ n++; nr+=dr*s; nc+=dc*s; }
+      }
+      if(n>=5) return true;
+    }
     return false;
   }
 
@@ -248,7 +250,7 @@
   function broadcastState(){
     if(!isHost) return;
     const m=stateMsg();
-    conns.forEach(c=>{ try{c.send(m);}catch(e){} });
+    conns.forEach(c=>{ try{ c.send(m); }catch(e){} });
     $('specBadge').textContent='관람 '+specCount+'명';
   }
 
@@ -259,17 +261,17 @@
     canvas.width=DIM*dpr; canvas.height=DIM*dpr;
     canvas.style.width=DIM+'px'; canvas.style.height=DIM+'px';
     ctx.scale(dpr,dpr);
-    canvas.style.cursor = (myColor===0)?'default':'pointer';
+    canvas.style.cursor=(myColor===0)?'default':'pointer';
     canvas.addEventListener('click', onClick);
   }
   function onClick(e){
-    if(myColor===0 || gameOver) return;       // 관람자/종료
-    if(current!==myColor) return;             // 내 차례 아님
+    if(myColor===0 || gameOver) return;
+    if(current!==myColor) return;
     const rect=canvas.getBoundingClientRect();
     const c=Math.round((e.clientX-rect.left-PAD)/CELL);
     const r=Math.round((e.clientY-rect.top-PAD)/CELL);
     if(r<0||r>=SIZE||c<0||c>=SIZE||board[r][c]!==0) return;
-    if(isHost) applyMove(r,c,1);              // 호스트=흑
+    if(isHost) applyMove(r,c,1);
     else hostConn.send({type:'intent', r, c});
   }
 
@@ -279,7 +281,7 @@
     if(gameOver){
       const name=winner===1?'⚫ 흑':'⚪ 백';
       const me=(winner===myColor && myColor!==0)?' (나의 승리!)':'';
-      updateStatus(`🎉 ${name} 승리!${me}`); return;
+      updateStatus('🎉 '+name+' 승리!'+me); return;
     }
     const dot=current===1?'<span class="stone-dot black-dot"></span>':'<span class="stone-dot white-dot"></span>';
     let tail;
@@ -294,21 +296,25 @@
     if(!ctx||!board) return;
     ctx.clearRect(0,0,DIM,DIM);
     ctx.strokeStyle='#5c3a1e'; ctx.lineWidth=1;
-    for(let i=0;i<SIZE;i++){const p=PAD+i*CELL;
+    for(let i=0;i<SIZE;i++){
+      const p=PAD+i*CELL;
       ctx.beginPath();ctx.moveTo(PAD,p);ctx.lineTo(DIM-PAD,p);ctx.stroke();
-      ctx.beginPath();ctx.moveTo(p,PAD);ctx.lineTo(p,DIM-PAD);ctx.stroke();}
+      ctx.beginPath();ctx.moveTo(p,PAD);ctx.lineTo(p,DIM-PAD);ctx.stroke();
+    }
     const st=[3,7,11]; ctx.fillStyle='#5c3a1e';
-    for(const r of st)for(const c of st){ctx.beginPath();ctx.arc(PAD+c*CELL,PAD+r*CELL,3,0,Math.PI*2);ctx.fill();}
-    for(let r=0;r<SIZE;r++)for(let c=0;c<SIZE;c++)if(board[r][c])stone(r,c,board[r][c]);
-    if(lastMove){ctx.strokeStyle='#e34b4b';ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(PAD+lastMove.c*CELL,PAD+lastMove.r*CELL,CELL*0.42,0,Math.PI*2);ctx.stroke();}
+    for(const r of st) for(const c of st){ ctx.beginPath();ctx.arc(PAD+c*CELL,PAD+r*CELL,3,0,Math.PI*2);ctx.fill(); }
+    for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(board[r][c]) stone(r,c,board[r][c]);
+    if(lastMove){
+      ctx.strokeStyle='#e34b4b'; ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(PAD+lastMove.c*CELL,PAD+lastMove.r*CELL,CELL*0.42,0,Math.PI*2);ctx.stroke();
+    }
   }
   function stone(r,c,p){
-    const x=PAD+c*CELL,y=PAD+r*CELL,rad=CELL*0.42;
+    const x=PAD+c*CELL, y=PAD+r*CELL, rad=CELL*0.42;
     const g=ctx.createRadialGradient(x-rad*0.3,y-rad*0.3,rad*0.1,x,y,rad);
-    if(p===1){g.addColorStop(0,'#666');g.addColorStop(1,'#0a0a0a');}
-    else{g.addColorStop(0,'#fff');g.addColorStop(1,'#c8c8c8');}
-    ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);ctx.fill();
+    if(p===1){ g.addColorStop(0,'#666'); g.addColorStop(1,'#0a0a0a'); }
+    else { g.addColorStop(0,'#fff'); g.addColorStop(1,'#c8c8c8'); }
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,rad,0,Math.PI*2); ctx.fill();
   }
 })();
 </script>
