@@ -8,7 +8,7 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; display: flex; flex-direction: column;
-    align-items: center; justify-content: flex-start; gap: 14px;
+    align-items: center; justify-content: flex-start; gap: 12px;
     background: #2b2b30; color: #f0f0f0;
     font-family: -apple-system, "Malgun Gothic", sans-serif; padding: 20px;
   }
@@ -28,11 +28,13 @@
     background: #5b8def; color: #fff; cursor: pointer; font-weight: 600; white-space: nowrap;
   }
   button:hover { background: #4a7ad6; }
-  button:disabled { background: #555; cursor: not-allowed; }
+  button:disabled { background: #555; cursor: not-allowed; opacity:.7; }
   button.gray { background: #555; }
   button.gray:hover { background: #444; }
   button.green { background: #3ba55d; }
   button.green:hover { background: #339150; }
+  button.orange { background: #e08b3b; }
+  button.orange:hover { background: #c9772b; }
   .code-box {
     display: flex; gap: 8px; align-items: center; background: #222;
     padding: 10px 12px; border-radius: 8px; font-size: 20px; font-weight: 700;
@@ -45,16 +47,18 @@
     font-size: 17px; font-weight: 600; padding: 8px 18px;
     background: #3a3a42; border-radius: 999px; min-height: 22px; text-align: center;
   }
-  .stone-dot { display: inline-block; width: 13px; height: 13px; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+  .seats { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; font-size:13px; }
+  .seat { background:#222; padding:5px 12px; border-radius:999px; }
+  .stone-dot { display: inline-block; width: 13px; height: 13px; border-radius: 50%; vertical-align: middle; margin-right: 5px; }
   .black-dot { background: #1a1a1a; border: 1px solid #888; }
   .white-dot { background: #fafafa; border: 1px solid #888; }
+  #notice { font-size:13px; color:#ffd479; min-height:18px; text-align:center; }
   canvas { background: #e3b66b; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4); touch-action: manipulation; }
   .hidden { display: none !important; }
-  .controls { display: flex; gap: 10px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content:center; }
   .myinfo { font-size: 13px; color: #ccc; text-align: center; }
-  .badge { background:#222; padding:3px 10px; border-radius:999px; font-size:12px; color:#bbb; }
   @media (max-width: 480px){
-    body { padding: 12px; gap: 10px; }
+    body { padding: 12px; gap: 9px; }
     h1 { font-size: 19px; }
     #status { font-size: 15px; }
     .code-box { font-size: 18px; }
@@ -81,16 +85,23 @@
   </div>
 
   <!-- 게임 -->
-  <div id="game" class="hidden" style="display:flex;flex-direction:column;align-items:center;gap:12px;">
+  <div id="game" class="hidden" style="display:flex;flex-direction:column;align-items:center;gap:10px;">
     <div id="status"></div>
-    <div class="myinfo"><span id="myInfo"></span> &nbsp; <span class="badge" id="specBadge">관람 0명</span></div>
+    <div class="seats">
+      <span class="seat" id="seatBlack">⚫ 흑: -</span>
+      <span class="seat" id="seatWhite">⚪ 백: -</span>
+      <span class="seat" id="seatSpec">👀 관람 0</span>
+    </div>
+    <div id="notice"></div>
     <div id="gameCodeArea" class="hidden" style="display:flex;flex-direction:column;gap:6px;align-items:center;background:#3a3a42;padding:10px 14px;border-radius:10px;">
-      <div class="hint" id="gameCodeHint">아래 방 코드를 상대·관람자에게 보내세요</div>
+      <div class="hint">아래 방 코드를 상대·관람자에게 보내세요</div>
       <div class="code-box" style="min-width:220px;"><span id="gameCode">…</span><button id="gameCopyBtn" class="gray">복사</button></div>
     </div>
     <canvas id="board"></canvas>
     <div class="controls">
-      <button id="newGameBtn" class="gray">새 게임 (공수교대)</button>
+      <button id="newGameBtn" class="gray hidden">새 게임</button>
+      <button id="joinBlackBtn" class="orange hidden">⚫ 흑으로 참여</button>
+      <button id="joinWhiteBtn" class="green hidden">⚪ 백으로 참여</button>
       <button id="leaveBtn" class="gray">나가기</button>
     </div>
   </div>
@@ -102,16 +113,20 @@
 (function(){
   // ===== 판 설정 =====
   const SIZE=15;
-  let CELL=36, PAD=26, DIM=PAD*2+CELL*(SIZE-1);   // 화면 크기에 따라 동적 조절
+  let CELL=36, PAD=26, DIM=PAD*2+CELL*(SIZE-1);
   let canvas, ctx;
-  // ===== 공유 게임 상태 =====
-  let board, current, gameOver, winner, lastMove, specCount=0;
-  // ===== 네트워크 =====
-  let peer, isHost=false, myColor=0;   // myColor: 1흑,2백,0관람
-  let myRole='', hostColor=1;          // myRole: host/player/spectator, hostColor: 호스트의 이번 판 색
-  let conns=[], playerConn=null;       // 호스트 전용 (playerConn = 상대 플레이어)
-  let hostConn=null;                   // 게스트 전용
+
+  // ===== 공유 게임 상태 (호스트가 권한 보유) =====
+  let board, current, gameOver, winner, lastMove;
+  let seat={1:null, 2:null};   // 색 → 식별자(id), 흑=1 백=2
+  let specCount=0;
+
+  // ===== 로컬/네트워크 =====
+  let peer, isHost=false, myId='', myColor=0;
+  let conns=[];                // 호스트 전용: 모든 게스트 연결
+  let hostConn=null;           // 게스트 전용
   let inGame=false;
+  let lastOppId='__init__';    // 상대 입퇴장 감지용
 
   const $=id=>document.getElementById(id);
 
@@ -124,14 +139,17 @@
   $('createBtn').addEventListener('click', ()=>{
     const code=makeCode();
     $('createBtn').disabled=true; $('connState').textContent='서버 연결 중…';
-    isHost=true; myRole='host'; hostColor=1;
+    isHost=true;
     peer=new Peer('omok-'+code);
     peer.on('open', ()=>{
+      myId='HOST';
+      seat={1:'HOST', 2:null};   // 호스트가 흑
       $('connState').textContent='상대/관람자 대기 중…';
-      enterGame();                       // 호스트는 바로 입장
-      $('gameCode').textContent=code;    // 게임 화면 안에 코드 표시
+      enterGame();
+      $('gameCode').textContent=code;
       $('gameCodeArea').classList.remove('hidden');
-      resetState(false);
+      resetBoard();
+      pushState();
     });
     peer.on('connection', c=>registerConn(c));
     peer.on('error', e=>{ $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false; });
@@ -142,29 +160,47 @@
     c.on('data', msg=>hostHandle(c,msg));
     c.on('close', ()=>{
       conns=conns.filter(x=>x!==c);
-      if(c===playerConn) playerConn=null;
-      recountSpecs(); broadcastState();
+      const id=c.peer;
+      if(seat[1]===id) seat[1]=null;
+      if(seat[2]===id) seat[2]=null;
+      recountSpecs(); pushState();
     });
   }
 
   function hostHandle(c,msg){
+    const id=c.peer;
     if(msg.type==='hello'){
-      if(msg.role==='player' && !playerConn){
-        playerConn=c; c._role='player'; c.send({type:'welcome', role:'player'});
-      } else {
-        c._role='spectator'; c.send({type:'welcome', role:'spectator'});
+      if(msg.role==='player'){
+        if(!seat[2]) seat[2]=id;
+        else if(!seat[1]) seat[1]=id;   // 흑 자리가 비어있으면(드문 경우) 흑으로
+        // 둘 다 차있으면 관람
       }
-      recountSpecs();
-      c.send(stateMsg());
-      broadcastState();
+      recountSpecs(); pushState();
     } else if(msg.type==='intent'){
-      if(c===playerConn) applyMove(msg.r,msg.c,3-hostColor);  // 상대 플레이어 색
+      const col=(seat[1]===id)?1:(seat[2]===id)?2:0;
+      if(col) applyMove(msg.r,msg.c,col);
     } else if(msg.type==='newgame'){
-      resetState(true);   // 새 게임 = 공수교대
+      const col=(seat[1]===id)?1:(seat[2]===id)?2:0;
+      if(col){ resetBoard(); pushState(); }
+    } else if(msg.type==='takeSeat'){
+      doTakeSeat(id, msg.color);
     }
   }
 
-  function recountSpecs(){ specCount=conns.filter(x=>x._role==='spectator').length; }
+  function recountSpecs(){
+    specCount=conns.filter(x=> x.peer!==seat[1] && x.peer!==seat[2]).length;
+  }
+
+  // 관람객(id)이 원하는 색(color) 자리로 참여 → 그 색의 기존 플레이어는 관람석으로
+  function doTakeSeat(id, color){
+    if(color!==1 && color!==2) return;
+    if(seat[1]===id || seat[2]===id) return;   // 이미 플레이어면 무시
+    if(seat[color] && !gameOver) return;       // 찬 자리는 게임 종료 후에만 교대 가능(빈 자리는 언제든)
+    seat[color]=id;                            // 신청자가 그 색 차지(기존 플레이어 자동 관람석)
+    recountSpecs();
+    resetBoard();                              // 새 판 시작
+    pushState();
+  }
 
   // ---------- 게스트: 참가 / 관람 ----------
   function join(role){
@@ -175,10 +211,11 @@
     isHost=false;
     peer=new Peer();
     peer.on('open', ()=>{
+      myId=peer.id;
       hostConn=peer.connect('omok-'+code,{reliable:true});
       hostConn.on('open', ()=>hostConn.send({type:'hello', role}));
       hostConn.on('data', guestHandle);
-      hostConn.on('close', ()=>{ if(inGame) updateStatus('호스트 연결이 끊겼습니다.'); });
+      hostConn.on('close', ()=>{ if(inGame){ $('notice').textContent='호스트 연결이 끊겼습니다.'; updateStatus('연결 종료'); } });
     });
     peer.on('error', e=>{
       $('lobbyMsg').textContent='연결 실패: '+e.type+' (코드 확인)';
@@ -189,18 +226,12 @@
   $('watchBtn').addEventListener('click', ()=>join('spectator'));
 
   function guestHandle(msg){
-    if(msg.type==='welcome'){
-      myRole=msg.role;                       // 'player' | 'spectator'
-      if(myRole==='spectator') $('lobbyMsg').textContent='';
-      enterGame();
-    } else if(msg.type==='state'){
-      board=msg.board; current=msg.current; gameOver=msg.gameOver;
-      winner=msg.winner; lastMove=msg.lastMove; specCount=msg.specCount;
-      hostColor=msg.hostColor;
-      applyMyColor();
-      if(!inGame) enterGame();
-      draw(); refreshStatus();
-    }
+    if(msg.type!=='state') return;
+    board=msg.board; current=msg.current; gameOver=msg.gameOver;
+    winner=msg.winner; lastMove=msg.lastMove;
+    seat=msg.seat; specCount=msg.specCount;
+    if(!inGame) enterGame();
+    localRefresh();
   }
 
   // ---------- 공통 진입 ----------
@@ -210,54 +241,108 @@
     $('game').classList.remove('hidden');
     $('connState').textContent='연결됨 ✓';
     initCanvas();
-    applyMyColor();
-    if(isHost){ draw(); refreshStatus(); }
   }
 
-  function applyMyColor(){
-    if(myRole==='host') myColor=hostColor;
-    else if(myRole==='player') myColor=3-hostColor;
-    else myColor=0;
-    let label;
-    if(myColor===1) label='<span class="stone-dot black-dot"></span>나는 흑 (선공)';
-    else if(myColor===2) label='<span class="stone-dot white-dot"></span>나는 백 (후공)';
-    else label='👀 관람 모드 (착수 불가)';
-    const info=$('myInfo'); if(info) info.innerHTML=label;
+  // ---------- 상태 동기화 ----------
+  function pushState(){          // 호스트 전용: 모두에게 보내고 본인 화면 갱신
+    if(!isHost) return;
+    const m={type:'state', board, current, gameOver, winner, lastMove, seat, specCount};
+    conns.forEach(c=>{ try{ c.send(m); }catch(e){} });
+    localRefresh();
+  }
+
+  function myColorNow(){ return (seat[1]===myId)?1:(seat[2]===myId)?2:0; }
+
+  function localRefresh(){
+    myColor=myColorNow();
     if(canvas) canvas.style.cursor=(myColor===0)?'default':'pointer';
+    draw();
+    updateSeats();
+    detectOpponentChange();
+    refreshStatus();
+    refreshButtons();
   }
 
+  // 좌석/관람 표시
+  function label(id){
+    if(!id) return '빈자리';
+    if(id===myId) return '나';
+    return '상대';
+  }
+  function updateSeats(){
+    $('seatBlack').innerHTML='<span class="stone-dot black-dot"></span>흑: '+label(seat[1]);
+    $('seatWhite').innerHTML='<span class="stone-dot white-dot"></span>백: '+label(seat[2]);
+    $('seatSpec').textContent='👀 관람 '+specCount;
+  }
+
+  // 상대 입퇴장 알림 (플레이어 기준)
+  function detectOpponentChange(){
+    if(myColor===0){ lastOppId='__spec__'; return; }
+    const oppId=seat[3-myColor];
+    if(lastOppId==='__init__'){ lastOppId=oppId; return; }
+    if(oppId!==lastOppId){
+      if(oppId && !lastOppId) flashNotice('상대가 입장했습니다 ✓');
+      else if(!oppId && lastOppId) flashNotice('상대가 나갔습니다');
+      else if(oppId && lastOppId) flashNotice('상대가 교대되었습니다');
+      lastOppId=oppId;
+    }
+  }
+  let noticeTimer=null;
+  function flashNotice(t){
+    $('notice').textContent=t;
+    clearTimeout(noticeTimer);
+    noticeTimer=setTimeout(()=>{ $('notice').textContent=''; }, 4000);
+  }
+
+  // ---------- 버튼 ----------
   $('gameCopyBtn').addEventListener('click', ()=>{
     navigator.clipboard?.writeText($('gameCode').textContent);
     $('gameCopyBtn').textContent='복사됨'; setTimeout(()=>$('gameCopyBtn').textContent='복사',1200);
   });
-
   $('newGameBtn').addEventListener('click', ()=>{
-    if(myColor===0) return;                 // 관람자는 불가
-    if(isHost) resetState(true);            // 공수교대
+    if(myColor===0) return;
+    if(isHost){ resetBoard(); pushState(); }
     else hostConn?.send({type:'newgame'});
   });
-
+  function takeSeat(color){
+    if(myColor!==0) return;                       // 이미 플레이어면 무시
+    if(isHost) doTakeSeat(myId, color);           // 호스트가 관람 상태일 때 포함
+    else hostConn?.send({type:'takeSeat', color});
+  }
+  $('joinBlackBtn').addEventListener('click', ()=>takeSeat(1));
+  $('joinWhiteBtn').addEventListener('click', ()=>takeSeat(2));
   $('leaveBtn').addEventListener('click', ()=>{
     if(confirm('방에서 나가시겠어요?')){
       try{ peer && peer.destroy(); }catch(e){}
-      location.reload();                    // 처음 화면(로비)으로
+      location.reload();
     }
   });
 
-  // ---------- 게임 로직 (호스트가 권한 보유) ----------
-  function resetState(swap){
-    if(swap) hostColor = 3-hostColor;       // 공수교대: 호스트 색 교체
-    board=Array.from({length:SIZE},()=>Array(SIZE).fill(0));
-    current=1; gameOver=false; winner=0; lastMove=null;   // 흑(1)이 항상 선공
-    applyMyColor();
-    draw(); refreshStatus(); broadcastState();
+  function refreshButtons(){
+    const iAmPlayer = myColor!==0;
+    show('newGameBtn', iAmPlayer);
+    // 관람객(호스트가 관람 상태가 된 경우 포함): 직접 흑/백 선택 참여
+    //  - 빈 자리는 언제든, 찬 자리는 게임 종료 후에만 교대 가능
+    const iAmSpec = (myColor===0);
+    const blackOpen = !seat[1] || gameOver;
+    const whiteOpen = !seat[2] || gameOver;
+    show('joinBlackBtn', iAmSpec && blackOpen);
+    show('joinWhiteBtn', iAmSpec && whiteOpen);
   }
-  function applyMove(r,c,player){
+  function show(id, on){ $(id).classList.toggle('hidden', !on); }
+
+  // ---------- 게임 로직 ----------
+  function resetBoard(){
+    board=Array.from({length:SIZE},()=>Array(SIZE).fill(0));
+    current=1; gameOver=false; winner=0; lastMove=null;   // 흑(1) 항상 선공, 색은 유지
+  }
+  function applyMove(r,c,player){       // 호스트에서만 실행
     if(gameOver || board[r][c]!==0 || player!==current) return;
+    if(!seat[1] || !seat[2]) return;    // 두 자리 모두 차야 진행
     board[r][c]=player; lastMove={r,c};
     if(checkWin(r,c,player)){ gameOver=true; winner=player; }
     else current=(player===1?2:1);
-    draw(); refreshStatus(); broadcastState();
+    pushState();
   }
   function checkWin(r,c,p){
     const dirs=[[0,1],[1,0],[1,1],[1,-1]];
@@ -272,19 +357,8 @@
     return false;
   }
 
-  function stateMsg(){
-    return {type:'state', board, current, gameOver, winner, lastMove, specCount, hostColor};
-  }
-  function broadcastState(){
-    if(!isHost) return;
-    const m=stateMsg();
-    conns.forEach(c=>{ try{ c.send(m); }catch(e){} });
-    $('specBadge').textContent='관람 '+specCount+'명';
-  }
-
   // ---------- 입력 ----------
   function sizeCanvas(){
-    // 화면 너비에 맞춰 판 크기 자동 계산 (모바일 대응)
     const avail = Math.min(window.innerWidth - 24, 560);
     CELL = Math.max(18, Math.min(36, Math.floor((avail - 36) / (SIZE-1))));
     PAD  = Math.round(CELL * 0.72);
@@ -292,13 +366,12 @@
     const dpr = window.devicePixelRatio || 1;
     canvas.width = DIM*dpr; canvas.height = DIM*dpr;
     canvas.style.width = DIM+'px'; canvas.style.height = DIM+'px';
-    ctx.setTransform(1,0,0,1,0,0);   // 변환 초기화 후 재적용
+    ctx.setTransform(1,0,0,1,0,0);
     ctx.scale(dpr,dpr);
   }
   function initCanvas(){
     canvas=$('board'); ctx=canvas.getContext('2d');
     sizeCanvas();
-    canvas.style.cursor=(myColor===0)?'default':'pointer';
     canvas.addEventListener('click', onClick);
     window.addEventListener('resize', ()=>{ sizeCanvas(); draw(); });
     window.addEventListener('orientationchange', ()=>{ setTimeout(()=>{ sizeCanvas(); draw(); },200); });
@@ -306,23 +379,26 @@
   function onClick(e){
     if(myColor===0 || gameOver) return;
     if(current!==myColor) return;
+    if(!seat[1] || !seat[2]){ flashNotice('상대를 기다리는 중입니다'); return; }
     const rect=canvas.getBoundingClientRect();
     const c=Math.round((e.clientX-rect.left-PAD)/CELL);
     const r=Math.round((e.clientY-rect.top-PAD)/CELL);
     if(r<0||r>=SIZE||c<0||c>=SIZE||board[r][c]!==0) return;
-    if(isHost) applyMove(r,c,hostColor);    // 호스트는 자기 색으로 착수
+    if(isHost) applyMove(r,c,myColor);
     else hostConn.send({type:'intent', r, c});
   }
 
   // ---------- 상태 표시 ----------
   function refreshStatus(){
-    $('specBadge').textContent='관람 '+(specCount||0)+'명';
+    if(!seat[1] || !seat[2]){
+      updateStatus('상대 플레이어를 기다리는 중…'); return;
+    }
     if(gameOver){
       const name=winner===1?'⚫ 흑':'⚪ 백';
-      let me='';
-      if(myColor!==0) me = (winner===myColor)?' — 나의 승리! 🎉':' — 아쉽지만 패배';
-      else me=' (관람)';
-      updateStatus('게임 종료! '+name+' 승리'+me); return;
+      let tail='';
+      if(myColor!==0) tail = (winner===myColor)?' — 나의 승리! 🎉':' — 패배';
+      else tail=' (관람)';
+      updateStatus('게임 종료! '+name+' 승리'+tail); return;
     }
     const dot=current===1?'<span class="stone-dot black-dot"></span>':'<span class="stone-dot white-dot"></span>';
     let tail;
