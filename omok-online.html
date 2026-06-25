@@ -127,33 +127,88 @@
   const $=id=>document.getElementById(id);
 
   const ROOM_ID='omok-musun-room-7f3a9c2e1b';   // 코드 없이 모두 같은 방
+  let committed=false;        // 게스트가 역할(플레이어/관람) 확정 여부
+  let lobbyState='';          // 'connecting' | 'noroom' | 'room'
+  let reprobeTimer=null;
+
+  // 페이지 열리면 먼저 방 상태 확인
+  window.addEventListener('load', ()=>{ setLobby('connecting'); probe(); });
+
+  // ---------- 로비 버튼 활성/비활성 ----------
+  function setLobby(s){
+    lobbyState=s;
+    if(s==='connecting'){
+      $('createBtn').disabled=true; $('playBtn').disabled=true; $('watchBtn').disabled=true;
+      $('lobbyMsg').textContent='방 확인 중…';
+    } else if(s==='noroom'){
+      $('createBtn').disabled=false; $('playBtn').disabled=true; $('watchBtn').disabled=true;
+      $('lobbyMsg').textContent='아직 방이 없어요. "방 만들기"를 눌러 시작하세요.';
+      scheduleReprobe();
+    }
+  }
+  function updateLobby(){      // 접속된 상태에서 좌석에 따라 버튼 갱신
+    if(committed) return;
+    lobbyState='room'; clearTimeout(reprobeTimer);
+    const full = seat[1] && seat[2];
+    $('createBtn').disabled=true;        // 방이 이미 있음
+    $('playBtn').disabled=!!full;        // 두 명이 차면 비활성화
+    $('watchBtn').disabled=false;
+    $('lobbyMsg').textContent = full ? '플레이어 자리가 가득 찼습니다. 관람만 가능해요.' : '플레이어 자리가 비어 있어요.';
+  }
+  function scheduleReprobe(){
+    clearTimeout(reprobeTimer);
+    reprobeTimer=setTimeout(()=>{
+      if(!isHost && !committed && lobbyState==='noroom'){
+        try{ peer && peer.destroy(); }catch(_){}
+        probe();
+      }
+    }, 3000);
+  }
+
+  // ---------- 게스트로 방 접속(로비 관찰 겸용) ----------
+  function probe(){
+    isHost=false; committed=false;
+    peer=new Peer();
+    peer.on('open', ()=>{
+      myId=peer.id;
+      hostConn=peer.connect(ROOM_ID,{reliable:true});
+      hostConn.on('open', ()=>hostConn.send({type:'hello'}));   // 일단 관찰자(역할 미정)
+      hostConn.on('data', guestHandle);
+      hostConn.on('close', ()=>{
+        if(committed){ $('notice').textContent='호스트 연결이 끊겼습니다.'; updateStatus('연결 종료'); }
+        else setLobby('noroom');
+      });
+    });
+    peer.on('error', e=>{
+      if(e.type==='peer-unavailable') setLobby('noroom');
+      else if(!committed) $('lobbyMsg').textContent='연결 오류: '+e.type;
+    });
+  }
 
   // ---------- 호스트: 방 만들기 ----------
   $('createBtn').addEventListener('click', ()=>{
-    $('createBtn').disabled=true; $('connState').textContent='방 만드는 중…';
-    isHost=true;
+    initAudio();
+    clearTimeout(reprobeTimer);
+    try{ peer && peer.destroy(); }catch(_){}   // 관찰용 연결 정리
+    $('createBtn').disabled=true; $('lobbyMsg').textContent='방 만드는 중…';
+    isHost=true; committed=true;
     peer=new Peer(ROOM_ID);
     peer.on('open', ()=>{
-      myId='HOST';
-      seat={1:'HOST', 2:null};   // 호스트가 흑
-      enterGame();
-      resetBoard();
-      pushState();
+      myId='HOST'; seat={1:'HOST', 2:null};   // 호스트가 흑
+      enterGame(); resetBoard(); pushState();
     });
     peer.on('connection', c=>registerConn(c));
     peer.on('error', e=>{
-      if(e.type==='unavailable-id'){
-        $('lobbyMsg').textContent='이미 방이 열려 있어요. "플레이어로 참가" 또는 "관람하기"로 들어오세요.';
-        isHost=false; $('createBtn').disabled=false;
+      if(e.type==='unavailable-id'){          // 그새 누가 방을 만듦 → 게스트로 접속
+        isHost=false; committed=false;
         try{ peer.destroy(); }catch(_){}
-      } else {
-        $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false;
-      }
+        setLobby('connecting'); probe();
+      } else { $('lobbyMsg').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false; }
     });
   });
 
   function registerConn(c){
-    conns.push(c);
+    conns.push(c); c._committed=false;
     c.on('data', msg=>hostHandle(c,msg));
     c.on('close', ()=>{
       conns=conns.filter(x=>x!==c);
@@ -167,12 +222,16 @@
   function hostHandle(c,msg){
     const id=c.peer;
     if(msg.type==='hello'){
+      c._committed=false;            // 로비 관찰자(역할 미정)
+      pushState();
+    } else if(msg.type==='setRole'){
       if(msg.role==='player'){
-        if(!seat[2]) seat[2]=id;
-        else if(!seat[1]) seat[1]=id;   // 흑 자리가 비어있으면(드문 경우) 흑으로
-        // 둘 다 차있으면 관람
+        if(seat[1]===id || seat[2]===id){ c._committed=true; pushState(); }   // 이미 착석
+        else if(!seat[2]){ seat[2]=id; c._committed=true; recountSpecs(); pushState(); }
+        else { try{ c.send({type:'full'}); }catch(_){} }
+      } else {                       // spectator
+        c._committed=true; recountSpecs(); pushState();
       }
-      recountSpecs(); pushState();
     } else if(msg.type==='intent'){
       const col=(seat[1]===id)?1:(seat[2]===id)?2:0;
       if(col) applyMove(msg.r,msg.c,col);
@@ -185,48 +244,49 @@
   }
 
   function recountSpecs(){
-    specCount=conns.filter(x=> x.peer!==seat[1] && x.peer!==seat[2]).length;
+    specCount=conns.filter(x=> x._committed && x.peer!==seat[1] && x.peer!==seat[2]).length;
   }
 
   // 관람객(id)이 원하는 색(color) 자리로 참여 → 그 색의 기존 플레이어는 관람석으로
   function doTakeSeat(id, color){
     if(color!==1 && color!==2) return;
     if(seat[1]===id || seat[2]===id) return;   // 이미 플레이어면 무시
-    if(seat[color] && !gameOver) return;       // 찬 자리는 게임 종료 후에만 교대 가능(빈 자리는 언제든)
-    seat[color]=id;                            // 신청자가 그 색 차지(기존 플레이어 자동 관람석)
+    if(seat[color] && !gameOver) return;       // 찬 자리는 게임 종료 후에만 교대(빈 자리는 언제든)
+    seat[color]=id;
     recountSpecs();
-    resetBoard();                              // 새 판 시작
+    resetBoard();
     pushState();
   }
 
-  // ---------- 게스트: 참가 / 관람 ----------
-  function join(role){
-    $('playBtn').disabled=true; $('watchBtn').disabled=true;
-    $('lobbyMsg').textContent='연결 중…';
-    isHost=false;
-    peer=new Peer();
-    peer.on('open', ()=>{
-      myId=peer.id;
-      hostConn=peer.connect(ROOM_ID,{reliable:true});
-      hostConn.on('open', ()=>hostConn.send({type:'hello', role}));
-      hostConn.on('data', guestHandle);
-      hostConn.on('close', ()=>{ if(inGame){ $('notice').textContent='호스트 연결이 끊겼습니다.'; updateStatus('연결 종료'); } });
-    });
-    peer.on('error', e=>{
-      let m='연결 실패: '+e.type;
-      if(e.type==='peer-unavailable') m='아직 방이 없어요. 먼저 "방 만들기"를 눌러주세요.';
-      $('lobbyMsg').textContent=m;
-      $('playBtn').disabled=false; $('watchBtn').disabled=false;
-    });
-  }
-  $('playBtn').addEventListener('click', ()=>join('player'));
-  $('watchBtn').addEventListener('click', ()=>join('spectator'));
+  // ---------- 게스트: 참가 / 관람 버튼 ----------
+  $('playBtn').addEventListener('click', ()=>{
+    if($('playBtn').disabled) return;
+    initAudio();
+    $('playBtn').disabled=true; $('lobbyMsg').textContent='플레이어 자리 요청 중…';
+    hostConn?.send({type:'setRole', role:'player'});   // 확정은 호스트 응답 후
+  });
+  $('watchBtn').addEventListener('click', ()=>{
+    initAudio();
+    committed=true;
+    hostConn?.send({type:'setRole', role:'spectator'});
+    enterGame();
+  });
 
   function guestHandle(msg){
+    if(msg.type==='full'){
+      $('playBtn').disabled=true;
+      $('lobbyMsg').textContent='방에 이미 두 명이 있어 플레이어로 참가할 수 없습니다. 관람으로 입장하세요.';
+      return;
+    }
     if(msg.type!=='state') return;
     board=msg.board; current=msg.current; gameOver=msg.gameOver;
     winner=msg.winner; lastMove=msg.lastMove;
     seat=msg.seat; specCount=msg.specCount;
+    if(!committed){
+      if(seat[1]===myId || seat[2]===myId){ committed=true; enterGame(); localRefresh(); }
+      else updateLobby();          // 아직 로비: 좌석 상태로 버튼 갱신
+      return;
+    }
     if(!inGame) enterGame();
     localRefresh();
   }
@@ -250,10 +310,42 @@
 
   function myColorNow(){ return (seat[1]===myId)?1:(seat[2]===myId)?2:0; }
 
+  // ---------- 효과음 (착수 시 "톡") ----------
+  let audioCtx=null, prevMoveKey='';
+  function initAudio(){
+    try{
+      if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+      if(audioCtx.state==='suspended') audioCtx.resume();
+    }catch(e){}
+  }
+  function playStoneSound(){
+    if(!audioCtx) return;
+    const t=audioCtx.currentTime;
+    // 짧은 음(피치 하강) + 노이즈 클릭으로 나무 두는 느낌
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type='triangle';
+    o.frequency.setValueAtTime(440,t);
+    o.frequency.exponentialRampToValueAtTime(150,t+0.07);
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.45,t+0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.13);
+    o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t+0.15);
+    const len=Math.floor(audioCtx.sampleRate*0.03);
+    const buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,3);
+    const ns=audioCtx.createBufferSource(), ng=audioCtx.createGain();
+    ns.buffer=buf; ng.gain.value=0.25;
+    ns.connect(ng).connect(audioCtx.destination); ns.start(t);
+  }
+
   function localRefresh(){
     myColor=myColorNow();
     if(canvas) canvas.style.cursor=(myColor===0)?'default':'pointer';
     draw();
+    // 새 돌이 놓였으면 효과음
+    const key=lastMove?(lastMove.r+','+lastMove.c):'';
+    if(key && key!==prevMoveKey) playStoneSound();
+    prevMoveKey=key;
     updateSeats();
     detectOpponentChange();
     refreshStatus();
@@ -370,6 +462,7 @@
     window.addEventListener('orientationchange', ()=>{ setTimeout(()=>{ sizeCanvas(); draw(); },200); });
   }
   function onClick(e){
+    initAudio();
     if(myColor===0 || gameOver) return;
     if(current!==myColor) return;
     if(!seat[1] || !seat[2]){ flashNotice('상대를 기다리는 중입니다'); return; }
