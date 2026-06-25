@@ -53,6 +53,12 @@
   .controls { display: flex; gap: 10px; }
   .myinfo { font-size: 13px; color: #ccc; text-align: center; }
   .badge { background:#222; padding:3px 10px; border-radius:999px; font-size:12px; color:#bbb; }
+  @media (max-width: 480px){
+    body { padding: 12px; gap: 10px; }
+    h1 { font-size: 19px; }
+    #status { font-size: 15px; }
+    .code-box { font-size: 18px; }
+  }
 </style>
 </head>
 <body>
@@ -84,7 +90,8 @@
     </div>
     <canvas id="board"></canvas>
     <div class="controls">
-      <button id="newGameBtn" class="gray">새 게임</button>
+      <button id="newGameBtn" class="gray">새 게임 (공수교대)</button>
+      <button id="leaveBtn" class="gray">나가기</button>
     </div>
   </div>
 
@@ -94,13 +101,15 @@
 <script>
 (function(){
   // ===== 판 설정 =====
-  const SIZE=15, CELL=36, PAD=26, DIM=PAD*2+CELL*(SIZE-1);
+  const SIZE=15;
+  let CELL=36, PAD=26, DIM=PAD*2+CELL*(SIZE-1);   // 화면 크기에 따라 동적 조절
   let canvas, ctx;
   // ===== 공유 게임 상태 =====
   let board, current, gameOver, winner, lastMove, specCount=0;
   // ===== 네트워크 =====
-  let peer, isHost=false, myColor=0;   // 1흑,2백,0관람
-  let conns=[], whiteConn=null;        // 호스트 전용
+  let peer, isHost=false, myColor=0;   // myColor: 1흑,2백,0관람
+  let myRole='', hostColor=1;          // myRole: host/player/spectator, hostColor: 호스트의 이번 판 색
+  let conns=[], playerConn=null;       // 호스트 전용 (playerConn = 상대 플레이어)
   let hostConn=null;                   // 게스트 전용
   let inGame=false;
 
@@ -115,14 +124,14 @@
   $('createBtn').addEventListener('click', ()=>{
     const code=makeCode();
     $('createBtn').disabled=true; $('connState').textContent='서버 연결 중…';
-    isHost=true; myColor=1;
+    isHost=true; myRole='host'; hostColor=1;
     peer=new Peer('omok-'+code);
     peer.on('open', ()=>{
       $('connState').textContent='상대/관람자 대기 중…';
-      enterGame();                       // 호스트는 바로 입장(흑)
+      enterGame();                       // 호스트는 바로 입장
       $('gameCode').textContent=code;    // 게임 화면 안에 코드 표시
       $('gameCodeArea').classList.remove('hidden');
-      resetState();
+      resetState(false);
     });
     peer.on('connection', c=>registerConn(c));
     peer.on('error', e=>{ $('connState').textContent='오류: '+e.type+' (새로고침)'; $('createBtn').disabled=false; });
@@ -133,29 +142,29 @@
     c.on('data', msg=>hostHandle(c,msg));
     c.on('close', ()=>{
       conns=conns.filter(x=>x!==c);
-      if(c===whiteConn) whiteConn=null;
+      if(c===playerConn) playerConn=null;
       recountSpecs(); broadcastState();
     });
   }
 
   function hostHandle(c,msg){
     if(msg.type==='hello'){
-      if(msg.role==='player' && !whiteConn){
-        whiteConn=c; c._color=2; c.send({type:'welcome', color:2});
+      if(msg.role==='player' && !playerConn){
+        playerConn=c; c._role='player'; c.send({type:'welcome', role:'player'});
       } else {
-        c._color=0; c.send({type:'welcome', color:0});
+        c._role='spectator'; c.send({type:'welcome', role:'spectator'});
       }
       recountSpecs();
       c.send(stateMsg());
       broadcastState();
     } else if(msg.type==='intent'){
-      if(c===whiteConn) applyMove(msg.r,msg.c,2);
+      if(c===playerConn) applyMove(msg.r,msg.c,3-hostColor);  // 상대 플레이어 색
     } else if(msg.type==='newgame'){
-      resetState();
+      resetState(true);   // 새 게임 = 공수교대
     }
   }
 
-  function recountSpecs(){ specCount=conns.filter(x=>x._color===0).length; }
+  function recountSpecs(){ specCount=conns.filter(x=>x._role==='spectator').length; }
 
   // ---------- 게스트: 참가 / 관람 ----------
   function join(role){
@@ -181,12 +190,14 @@
 
   function guestHandle(msg){
     if(msg.type==='welcome'){
-      myColor=msg.color;
-      if(myColor===0) $('lobbyMsg').textContent='';
+      myRole=msg.role;                       // 'player' | 'spectator'
+      if(myRole==='spectator') $('lobbyMsg').textContent='';
       enterGame();
     } else if(msg.type==='state'){
       board=msg.board; current=msg.current; gameOver=msg.gameOver;
       winner=msg.winner; lastMove=msg.lastMove; specCount=msg.specCount;
+      hostColor=msg.hostColor;
+      applyMyColor();
       if(!inGame) enterGame();
       draw(); refreshStatus();
     }
@@ -198,13 +209,21 @@
     $('lobby').classList.add('hidden');
     $('game').classList.remove('hidden');
     $('connState').textContent='연결됨 ✓';
+    initCanvas();
+    applyMyColor();
+    if(isHost){ draw(); refreshStatus(); }
+  }
+
+  function applyMyColor(){
+    if(myRole==='host') myColor=hostColor;
+    else if(myRole==='player') myColor=3-hostColor;
+    else myColor=0;
     let label;
     if(myColor===1) label='<span class="stone-dot black-dot"></span>나는 흑 (선공)';
     else if(myColor===2) label='<span class="stone-dot white-dot"></span>나는 백 (후공)';
     else label='👀 관람 모드 (착수 불가)';
-    $('myInfo').innerHTML=label;
-    initCanvas();
-    if(isHost){ draw(); refreshStatus(); }
+    const info=$('myInfo'); if(info) info.innerHTML=label;
+    if(canvas) canvas.style.cursor=(myColor===0)?'default':'pointer';
   }
 
   $('gameCopyBtn').addEventListener('click', ()=>{
@@ -213,15 +232,24 @@
   });
 
   $('newGameBtn').addEventListener('click', ()=>{
-    if(myColor===0) return;
-    if(isHost) resetState();
+    if(myColor===0) return;                 // 관람자는 불가
+    if(isHost) resetState(true);            // 공수교대
     else hostConn?.send({type:'newgame'});
   });
 
+  $('leaveBtn').addEventListener('click', ()=>{
+    if(confirm('방에서 나가시겠어요?')){
+      try{ peer && peer.destroy(); }catch(e){}
+      location.reload();                    // 처음 화면(로비)으로
+    }
+  });
+
   // ---------- 게임 로직 (호스트가 권한 보유) ----------
-  function resetState(){
+  function resetState(swap){
+    if(swap) hostColor = 3-hostColor;       // 공수교대: 호스트 색 교체
     board=Array.from({length:SIZE},()=>Array(SIZE).fill(0));
-    current=1; gameOver=false; winner=0; lastMove=null;
+    current=1; gameOver=false; winner=0; lastMove=null;   // 흑(1)이 항상 선공
+    applyMyColor();
     draw(); refreshStatus(); broadcastState();
   }
   function applyMove(r,c,player){
@@ -245,7 +273,7 @@
   }
 
   function stateMsg(){
-    return {type:'state', board, current, gameOver, winner, lastMove, specCount};
+    return {type:'state', board, current, gameOver, winner, lastMove, specCount, hostColor};
   }
   function broadcastState(){
     if(!isHost) return;
@@ -255,14 +283,25 @@
   }
 
   // ---------- 입력 ----------
+  function sizeCanvas(){
+    // 화면 너비에 맞춰 판 크기 자동 계산 (모바일 대응)
+    const avail = Math.min(window.innerWidth - 24, 560);
+    CELL = Math.max(18, Math.min(36, Math.floor((avail - 36) / (SIZE-1))));
+    PAD  = Math.round(CELL * 0.72);
+    DIM  = PAD*2 + CELL*(SIZE-1);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = DIM*dpr; canvas.height = DIM*dpr;
+    canvas.style.width = DIM+'px'; canvas.style.height = DIM+'px';
+    ctx.setTransform(1,0,0,1,0,0);   // 변환 초기화 후 재적용
+    ctx.scale(dpr,dpr);
+  }
   function initCanvas(){
     canvas=$('board'); ctx=canvas.getContext('2d');
-    const dpr=window.devicePixelRatio||1;
-    canvas.width=DIM*dpr; canvas.height=DIM*dpr;
-    canvas.style.width=DIM+'px'; canvas.style.height=DIM+'px';
-    ctx.scale(dpr,dpr);
+    sizeCanvas();
     canvas.style.cursor=(myColor===0)?'default':'pointer';
     canvas.addEventListener('click', onClick);
+    window.addEventListener('resize', ()=>{ sizeCanvas(); draw(); });
+    window.addEventListener('orientationchange', ()=>{ setTimeout(()=>{ sizeCanvas(); draw(); },200); });
   }
   function onClick(e){
     if(myColor===0 || gameOver) return;
@@ -271,7 +310,7 @@
     const c=Math.round((e.clientX-rect.left-PAD)/CELL);
     const r=Math.round((e.clientY-rect.top-PAD)/CELL);
     if(r<0||r>=SIZE||c<0||c>=SIZE||board[r][c]!==0) return;
-    if(isHost) applyMove(r,c,1);
+    if(isHost) applyMove(r,c,hostColor);    // 호스트는 자기 색으로 착수
     else hostConn.send({type:'intent', r, c});
   }
 
@@ -280,8 +319,10 @@
     $('specBadge').textContent='관람 '+(specCount||0)+'명';
     if(gameOver){
       const name=winner===1?'⚫ 흑':'⚪ 백';
-      const me=(winner===myColor && myColor!==0)?' (나의 승리!)':'';
-      updateStatus('🎉 '+name+' 승리!'+me); return;
+      let me='';
+      if(myColor!==0) me = (winner===myColor)?' — 나의 승리! 🎉':' — 아쉽지만 패배';
+      else me=' (관람)';
+      updateStatus('게임 종료! '+name+' 승리'+me); return;
     }
     const dot=current===1?'<span class="stone-dot black-dot"></span>':'<span class="stone-dot white-dot"></span>';
     let tail;
